@@ -44,7 +44,9 @@ ehthumbs.db
 scratch/
 scratch_test_braille.py
 build_panel_*.py
-Panel/
+# Panel heavy binary presentation & pdf (track markdown docs)
+Panel/*.pptx
+Panel/*.pdf
 data/fontlist-*.json
 
 # Large raw datasets (raw videos and bulk image captures - sample test docs retained)
