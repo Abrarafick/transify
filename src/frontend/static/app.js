@@ -2648,7 +2648,7 @@ function initTransifyAllModules() {
   if (window.TransifyTTSPage && window.TransifyTTSPage.init && (document.getElementById('slide-tts') || document.getElementById('tts-input-text'))) {
     window.TransifyTTSPage.init();
   }
-  if (window.DashboardPage && window.DashboardPage.init && document.getElementById('dashboard-container')) {
+  if (window.DashboardPage && window.DashboardPage.init && (document.getElementById('dashboard-container') || document.getElementById('system-status-badge') || document.getElementById('history-records-list'))) {
     window.DashboardPage.init();
   }
 
