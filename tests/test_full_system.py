@@ -425,6 +425,22 @@ class TestAssistiveExtensions(unittest.TestCase):
         self.assertTrue(api_res["success"])
         self.assertTrue(api_res["hand_detected"])
 
+    def test_discrete_capture_endpoint(self):
+        import cv2
+        import base64
+        import numpy as np
+        from src.api.server import judge_captured_sign_frame, ProcessFrameRequest
+        synthetic_img = np.zeros((240, 320, 3), dtype=np.uint8)
+        cv2.circle(synthetic_img, (160, 120), 40, (140, 160, 215), -1)
+        _, buf = cv2.imencode(".jpg", synthetic_img)
+        b64 = base64.b64encode(buf).decode("utf-8")
+        req = ProcessFrameRequest(image_b64=b64, mode="discrete_capture", language_mode="asl")
+        res = judge_captured_sign_frame(req)
+        self.assertTrue(res["success"])
+        self.assertTrue(res["hand_detected"])
+        self.assertEqual(res["status"], "CONFIRMED")
+        self.assertTrue(res["is_confirmed"])
+
 
 class TestSignFrameAIEngine(unittest.TestCase):
     """Verifies SignFrame AI integration, CNN models, 98% gateway, stabilizer and composer."""

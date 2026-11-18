@@ -314,6 +314,27 @@ def process_webcam_frame(req: ProcessFrameRequest):
         raise HTTPException(status_code=500, detail=f"Frame processing failure: {str(ex)}")
 
 
+@app.post("/api/sign/judge_capture", tags=["Sign Language"])
+def judge_captured_sign_frame(req: ProcessFrameRequest):
+    """
+    Discrete Capture & Deep Judgment Endpoint:
+    Processes a frozen/captured high-resolution snapshot, evaluates with multi-model AI,
+    applies the 98% Decision Gateway, and delivers an immediate verified output.
+    """
+    try:
+        res = live_sign_processor.judge_discrete_capture(
+            req.image_b64,
+            language_mode=req.language_mode or "asl",
+            mode=req.mode or "expressions",
+            roi=req.roi
+        )
+        return res
+    except Exception as ex:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Discrete capture failure: {str(ex)}")
+
+
 @app.post("/api/sign/reset", tags=["Sign Language"])
 def reset_sign_buffer():
     """Resets the sign language debounce consensus buffer and live tracking state."""

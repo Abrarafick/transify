@@ -461,6 +461,7 @@ class LiveSignFrameProcessor:
         active_lang = language_mode.strip().lower() if language_mode else "asl"
         if active_lang not in ("bdsl", "asl"):
             active_lang = "asl"
+        is_discrete = (mode == "discrete_capture")
 
         # 1. Decode base64 JPEG image
         try:
@@ -500,9 +501,9 @@ class LiveSignFrameProcessor:
                 if detected_hand:
                     hand_cx = float(np.mean([p.x for p in detected_hand]))
                     hand_cy = float(np.mean([p.y for p in detected_hand]))
-                    # Strict ROI checking: Hand center must strictly reside within target_roi
-                    margin = 0.04
-                    in_roi = is_synthetic_test or (
+                    # Strict ROI checking: Hand center must strictly reside within target_roi (generous for discrete capture)
+                    margin = 0.20 if is_discrete else 0.04
+                    in_roi = is_synthetic_test or is_discrete or (
                         (target_roi[0] - margin <= hand_cx <= target_roi[2] + margin) and
                         (target_roi[1] - margin <= hand_cy <= target_roi[3] + margin)
                     )
@@ -632,6 +633,9 @@ class LiveSignFrameProcessor:
                     }
 
                 confirmed_word, votes, req_votes = self.stabilizer.update(final_word, final_conf)
+                if is_synthetic_test or is_discrete:
+                    confirmed_word = final_word
+                    votes = req_votes
 
                 unified_translation = {
                     "source_language": "BdSL",
@@ -812,8 +816,9 @@ class LiveSignFrameProcessor:
             )
 
             confirmed_word, votes, req_votes = self.stabilizer.update(final_word, final_conf)
-            if is_synthetic_test:
+            if is_synthetic_test or is_discrete:
                 confirmed_word = final_word
+                votes = req_votes
             analysis_progress = min(1.0, votes / req_votes)
             analysis_pct = int(analysis_progress * 100)
 
@@ -914,8 +919,9 @@ class LiveSignFrameProcessor:
             )
 
             confirmed_word, votes, req_votes = self.stabilizer.update(final_word, final_conf)
-            if is_synthetic_test:
+            if is_synthetic_test or is_discrete:
                 confirmed_word = final_word
+                votes = req_votes
             analysis_progress = min(1.0, votes / req_votes)
             analysis_pct = int(analysis_progress * 100)
 
@@ -993,8 +999,8 @@ class LiveSignFrameProcessor:
             }
 
         # If in expressions or sentence mode and no gesture was matched:
-        # DO NOT fall through to the 24-class letter CNN! Hand is waiting / READY!
-        if mode != "fingerspell" and not is_synthetic_test:
+        # DO NOT fall through to the 24-class letter CNN during real-time streaming! Hand is waiting / READY!
+        if mode != "fingerspell" and not is_synthetic_test and not is_discrete:
             self.stabilizer.update(None, 0.0)
             self.last_confirmed_word = ""
             self.ambiguity_counter = 0
@@ -1083,8 +1089,9 @@ class LiveSignFrameProcessor:
 
         # Prediction Stabilization (Analysis phase verification)
         confirmed_letter, votes, req_votes = self.stabilizer.update(final_letter, final_conf)
-        if is_synthetic_test:
+        if is_synthetic_test or is_discrete:
             confirmed_letter = final_letter
+            votes = req_votes
         analysis_progress = min(1.0, votes / req_votes)
         analysis_pct = int(analysis_progress * 100)
 
@@ -1160,3 +1167,17 @@ class LiveSignFrameProcessor:
             "probabilities": probs,
             "latency_ms": round((time.time() - t0) * 1000, 2)
         }
+
+    def judge_discrete_capture(
+        self,
+        image_b64: str,
+        language_mode: str = "asl",
+        mode: str = "expressions",
+        roi: Optional[List[float]] = None
+    ) -> Dict[str, Any]:
+        """
+        Accurately judges a captured/frozen hand sign frame.
+        Evaluates HaGRID 24-gestures, ASL holistic words, BdSL expressions, and manual alphabet
+        with the 98% Decision Gateway and returns an immediate confirmed translation.
+        """
+        return self.process_frame(image_b64, mode="discrete_capture", language_mode=language_mode, roi=roi)

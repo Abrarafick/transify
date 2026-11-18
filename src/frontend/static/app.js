@@ -752,6 +752,16 @@ var SignPage = window.SignPage = window.TransifySign = {
   lastFingersCount: 0,
   roiPosition: 'right',
   lastFrameData: null,
+  isCameraFrozen: false,
+  cooldownActive: false,
+  cooldownEndTime: 0,
+  cooldownDurationMs: 2200,
+  cooldownConfirmedLabel: '',
+  cooldownDisplayText: '',
+  cooldownTimer: null,
+  handHoldFrames: 0,
+  handHoldRequired: 2,
+  isJudgingDiscrete: false,
   detectionState: {
     isDetected: false,
     label: '',
@@ -1283,6 +1293,21 @@ var SignPage = window.SignPage = window.TransifySign = {
         this.autoSpeak = e.target.checked;
       });
     }
+
+    const snapBtn = document.getElementById('snap-sign-btn');
+    if (snapBtn) {
+      snapBtn.addEventListener('click', () => this.triggerManualCapture());
+    }
+
+    document.addEventListener('keydown', (e) => {
+      if (e.code === 'Space' && !['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName)) {
+        const slide = document.getElementById('slide-hand-signal');
+        if (slide && slide.classList.contains('active')) {
+          e.preventDefault();
+          this.triggerManualCapture();
+        }
+      }
+    });
   },
 
   async toggleCamera() {
@@ -1303,6 +1328,11 @@ var SignPage = window.SignPage = window.TransifySign = {
         await this.videoEl.play();
       }
       this.isStreaming = true;
+      this.isCameraFrozen = false;
+      this.cooldownActive = false;
+      this.handHoldFrames = 0;
+      this.updateWorkflowHUD('ready');
+
       const toggleBtn = document.getElementById('toggle-camera-btn');
       if (toggleBtn) {
         toggleBtn.innerHTML = '🛑 Stop Camera';
@@ -1331,6 +1361,14 @@ var SignPage = window.SignPage = window.TransifySign = {
     if (this.videoEl) this.videoEl.srcObject = null;
     this.isStreaming = false;
     this.isProcessingFrame = false;
+    this.isCameraFrozen = false;
+    this.cooldownActive = false;
+    this.isJudgingDiscrete = false;
+    this.handHoldFrames = 0;
+    if (this.cooldownTimer) clearInterval(this.cooldownTimer);
+    this.cooldownTimer = null;
+    this.updateWorkflowHUD('ready');
+
     this.lastHandBBox = null;
     if (this.predictTimer) clearInterval(this.predictTimer);
     if (this.frameCaptureTimer) clearInterval(this.frameCaptureTimer);
@@ -1362,7 +1400,7 @@ var SignPage = window.SignPage = window.TransifySign = {
     if (this.frameCaptureTimer) clearInterval(this.frameCaptureTimer);
 
     this.frameCaptureTimer = setInterval(async () => {
-      if (!this.isStreaming || this.isProcessingFrame) return;
+      if (!this.isStreaming || this.isProcessingFrame || this.isCameraFrozen || this.cooldownActive || this.isJudgingDiscrete) return;
       if (!this.videoEl || this.videoEl.readyState < 2 || !this.videoEl.videoWidth) return;
 
       try {
@@ -1403,6 +1441,21 @@ var SignPage = window.SignPage = window.TransifySign = {
           } else {
             this.lastHandBBox = null;
             this.lastFingersCount = 0;
+          }
+
+          // Discrete Assistive Capture: Auto-trigger on steady hand hold
+          if (data.hand_detected && data.in_roi !== false) {
+            this.handHoldFrames = (this.handHoldFrames || 0) + 1;
+            this.updateWorkflowHUD('holding', this.handHoldFrames);
+
+            if (this.handHoldFrames >= this.handHoldRequired) {
+              this.handHoldFrames = 0;
+              this.executeDiscreteCapture(b64);
+              return;
+            }
+          } else {
+            this.handHoldFrames = 0;
+            this.updateWorkflowHUD('ready');
           }
 
           if (data.hand_detected && data.status === 'CONFIRMED' && data.label && data.label !== 'IDLE' && data.label !== 'ANALYZING') {
@@ -1496,19 +1549,300 @@ var SignPage = window.SignPage = window.TransifySign = {
     }, 200);
   },
 
+  async triggerManualCapture() {
+    if (!this.isStreaming) {
+      await this.startCamera();
+      setTimeout(() => this.executeDiscreteCapture(), 600);
+      return;
+    }
+    if (this.isCameraFrozen || this.cooldownActive) {
+      TransifyApp.showToast('Please wait for countdown to complete before snapping again.', 'info');
+      return;
+    }
+    await this.executeDiscreteCapture();
+  },
+
+  async executeDiscreteCapture(customB64 = null) {
+    if (this.isJudgingDiscrete || this.cooldownActive) return;
+    this.isJudgingDiscrete = true;
+    this.isCameraFrozen = true;
+
+    // Pause video element to give deliberate discrete feel
+    if (this.videoEl) {
+      try { this.videoEl.pause(); } catch (_) {}
+    }
+
+    this.updateWorkflowHUD('judging');
+
+    try {
+      let b64 = customB64;
+      if (!b64) {
+        if (!this.offscreenCanvas) {
+          this.offscreenCanvas = document.createElement('canvas');
+          this.offscreenCanvas.width = 640;
+          this.offscreenCanvas.height = 480;
+          this.offscreenCtx = this.offscreenCanvas.getContext('2d');
+        }
+        if (this.videoEl && this.videoEl.videoWidth) {
+          this.offscreenCtx.drawImage(this.videoEl, 0, 0, 640, 480);
+          b64 = this.offscreenCanvas.toDataURL('image/jpeg', 0.88);
+        }
+      }
+
+      if (!b64) {
+        this.isJudgingDiscrete = false;
+        this.isCameraFrozen = false;
+        if (this.videoEl && this.isStreaming) {
+          try { this.videoEl.play(); } catch (_) {}
+        }
+        return;
+      }
+
+      // Redraw canvas with freeze backdrop
+      this.drawCanvasFeedback();
+
+      const res = await fetch('/api/sign/judge_capture', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          image_b64: b64,
+          mode: this.currentMode,
+          language_mode: this.currentLanguageMode || 'asl',
+          roi: this.getTargetRoi()
+        })
+      });
+
+      if (!res.ok) throw new Error('Capture judgment request failed');
+      const data = await res.json();
+      this.lastFrameData = data;
+
+      if (data && data.success && data.hand_detected && data.label && data.label !== 'IDLE') {
+        const confirmedLabel = data.label;
+        const displayText = data.english_text || data.display_text || confirmedLabel;
+
+        this.setDetectionFeedback(confirmedLabel, data.confidence || 0.99);
+
+        this.updatePredictionUI({
+          label: confirmedLabel,
+          display_text: data.display_text || confirmedLabel,
+          bdsl_gloss: data.gloss || '',
+          english_text: displayText,
+          language_mode: data.language_mode || this.currentLanguageMode,
+          model_name: data.model_name,
+          unified_translation: data.unified_translation,
+          confidence: data.confidence || 0.99,
+          confirmed: true,
+          status: 'CONFIRMED',
+          analysis_pct: 100,
+          engine_info: data.engine_info
+        });
+
+        // Add to sentence builder
+        this.addTokenToSentence(confirmedLabel);
+
+        // TTS Speech
+        if (this.autoSpeak) {
+          TransifyTTS.speak(displayText);
+        }
+
+        TransifyApp.showToast(`✅ Confirmed Sign: "${confirmedLabel}"!`, 'success');
+        TransifyApp.announce(`Confirmed sign ${confirmedLabel}`);
+
+        // Start cooldown countdown
+        this.startCooldown(2200, confirmedLabel, displayText);
+
+      } else {
+        this.updatePredictionUI({
+          label: 'RETRY',
+          display_text: 'Hold hand clearly inside guide box...',
+          bdsl_gloss: 'No clear gesture identified',
+          confidence: 0,
+          confirmed: false,
+          status: 'READY'
+        });
+        TransifyApp.showToast('No clear sign identified. Reopening camera...', 'info');
+        this.startCooldown(1200, 'Try Again', 'Position hand inside guide box');
+      }
+
+    } catch (err) {
+      console.error('Discrete capture error:', err);
+      this.startCooldown(1000, 'Error', 'Reopening camera...');
+    } finally {
+      this.isJudgingDiscrete = false;
+    }
+  },
+
+  startCooldown(durationMs, confirmedLabel, displayText) {
+    this.cooldownActive = true;
+    this.cooldownDurationMs = durationMs;
+    this.cooldownEndTime = Date.now() + durationMs;
+    this.cooldownConfirmedLabel = confirmedLabel;
+    this.cooldownDisplayText = displayText;
+
+    if (this.cooldownTimer) clearInterval(this.cooldownTimer);
+
+    this.cooldownTimer = setInterval(() => {
+      const now = Date.now();
+      const left = this.cooldownEndTime - now;
+      if (left <= 0) {
+        clearInterval(this.cooldownTimer);
+        this.cooldownTimer = null;
+        this.cooldownActive = false;
+        this.isCameraFrozen = false;
+        this.handHoldFrames = 0;
+        this.updateWorkflowHUD('ready');
+        if (this.videoEl && this.isStreaming) {
+          try { this.videoEl.play(); } catch (_) {}
+        }
+        fetch('/api/sign/reset', { method: 'POST' }).catch(() => {});
+        TransifyApp.showToast('Camera reopened. Ready for next hand sign!', 'info');
+      } else {
+        this.updateWorkflowHUD('cooldown', (left / 1000).toFixed(1));
+      }
+    }, 80);
+  },
+
+  updateWorkflowHUD(state, extra = null) {
+    const banner = document.getElementById('sign-workflow-banner');
+    const textEl = document.getElementById('sign-workflow-text');
+    const iconEl = document.getElementById('sign-workflow-icon');
+    const timerEl = document.getElementById('sign-workflow-timer');
+    if (!banner || !textEl) return;
+
+    if (state === 'holding') {
+      if (iconEl) iconEl.textContent = '⏳';
+      textEl.textContent = `Holding gesture steady... (${extra}/2) → Capturing!`;
+      if (timerEl) { timerEl.style.display = 'inline-block'; timerEl.textContent = 'Holding...'; }
+    } else if (state === 'judging') {
+      if (iconEl) iconEl.textContent = '📸';
+      textEl.textContent = 'Camera Paused: AI Deep Judge analyzing captured gesture...';
+      if (timerEl) { timerEl.style.display = 'inline-block'; timerEl.textContent = 'Judging...'; }
+    } else if (state === 'cooldown') {
+      if (iconEl) iconEl.textContent = '✅';
+      textEl.textContent = `Confirmed! Preparing camera for next sign in ${extra}s...`;
+      if (timerEl) { timerEl.style.display = 'inline-block'; timerEl.textContent = `${extra}s`; }
+    } else {
+      if (iconEl) iconEl.textContent = '🎯';
+      textEl.textContent = 'Hold hand steady in box → Camera freezes & judges accurately → Speaks output!';
+      if (timerEl) { timerEl.style.display = 'none'; }
+    }
+  },
+
+  drawFrozenCooldownFeedback(w, h, boxX, boxY, boxW, boxH) {
+    if (!this.ctx) return;
+    this.ctx.save();
+
+    // Dark semi-transparent freeze overlay
+    this.ctx.fillStyle = 'rgba(15, 23, 42, 0.72)';
+    this.ctx.fillRect(0, 0, w, h);
+
+    if (this.cooldownActive) {
+      const now = Date.now();
+      const total = this.cooldownDurationMs || 2200;
+      const leftMs = Math.max(0, this.cooldownEndTime - now);
+      const progress = 1 - (leftMs / total);
+      const remainingSec = (leftMs / 1000).toFixed(1);
+
+      // Confirmed Card in center
+      const cardW = Math.min(460, w - 40);
+      const cardH = 175;
+      const cardX = (w - cardW) / 2;
+      const cardY = (h - cardH) / 2;
+
+      // Glassmorphic background
+      this.ctx.fillStyle = 'rgba(30, 27, 75, 0.94)';
+      this.ctx.strokeStyle = '#22c55e';
+      this.ctx.lineWidth = 3;
+      this.ctx.shadowColor = '#22c55e';
+      this.ctx.shadowBlur = 18;
+      this.ctx.beginPath();
+      this.ctx.roundRect(cardX, cardY, cardW, cardH, 20);
+      this.ctx.fill();
+      this.ctx.stroke();
+
+      // Checkmark icon & Title
+      this.ctx.shadowBlur = 0;
+      this.ctx.textAlign = 'center';
+      this.ctx.font = 'bold 22px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+      this.ctx.fillStyle = '#4ade80';
+      this.ctx.fillText(`✅ Sign Confirmed: "${this.cooldownConfirmedLabel || 'Gesture'}"`, w / 2, cardY + 44);
+
+      // English meaning / translation
+      this.ctx.font = '15px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+      this.ctx.fillStyle = '#e2e8f0';
+      this.ctx.fillText(`"${this.cooldownDisplayText || 'Recognized & Spoken'}"`, w / 2, cardY + 75);
+
+      // Countdown text
+      this.ctx.font = 'bold 14px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+      this.ctx.fillStyle = '#cbd5e1';
+      this.ctx.fillText(`🕒 Next sign in ${remainingSec}s... (Prepare next sign)`, w / 2, cardY + 115);
+
+      // Countdown Progress Bar
+      const barW = cardW - 60;
+      const barH = 8;
+      const barX = (w - barW) / 2;
+      const barY = cardY + 135;
+
+      this.ctx.fillStyle = 'rgba(255, 255, 255, 0.15)';
+      this.ctx.beginPath();
+      this.ctx.roundRect(barX, barY, barW, barH, 4);
+      this.ctx.fill();
+
+      this.ctx.fillStyle = '#22c55e';
+      this.ctx.beginPath();
+      this.ctx.roundRect(barX, barY, Math.max(6, barW * (1 - progress)), barH, 4);
+      this.ctx.fill();
+
+    } else if (this.isCameraFrozen) {
+      // FREEZE / JUDGING PHASE
+      const cardW = Math.min(420, w - 40);
+      const cardH = 140;
+      const cardX = (w - cardW) / 2;
+      const cardY = (h - cardH) / 2;
+
+      this.ctx.fillStyle = 'rgba(30, 27, 75, 0.94)';
+      this.ctx.strokeStyle = '#8338ec';
+      this.ctx.lineWidth = 3;
+      this.ctx.shadowColor = '#8338ec';
+      this.ctx.shadowBlur = 18;
+      this.ctx.beginPath();
+      this.ctx.roundRect(cardX, cardY, cardW, cardH, 20);
+      this.ctx.fill();
+      this.ctx.stroke();
+
+      this.ctx.shadowBlur = 0;
+      this.ctx.textAlign = 'center';
+      this.ctx.font = 'bold 20px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+      this.ctx.fillStyle = '#a78bfa';
+      this.ctx.fillText('📸 Camera Paused (Sign Captured)', w / 2, cardY + 50);
+
+      this.ctx.font = '14px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+      this.ctx.fillStyle = '#e2e8f0';
+      this.ctx.fillText('🔍 Deep AI Judge evaluating gesture accurately...', w / 2, cardY + 85);
+    }
+
+    this.ctx.restore();
+  },
+
   drawCanvasFeedback() {
     if (!this.ctx || !this.videoEl || !this.isStreaming) return;
     this.canvasEl.width = this.videoEl.videoWidth || 640;
     this.canvasEl.height = this.videoEl.videoHeight || 480;
     const w = this.canvasEl.width;
     const h = this.canvasEl.height;
-    this.ctx.clearRect(0, 0, w, h);
 
     const roi = this.getTargetRoi();
     const boxX = roi[0] * w;
     const boxY = roi[1] * h;
     const boxW = (roi[2] - roi[0]) * w;
     const boxH = (roi[3] - roi[1]) * h;
+
+    if (this.isCameraFrozen || this.cooldownActive) {
+      this.drawFrozenCooldownFeedback(w, h, boxX, boxY, boxW, boxH);
+      return;
+    }
+
+    this.ctx.clearRect(0, 0, w, h);
 
     // 1. Ambient Vignette / Semi-transparent focus mask outside the Target Box
     this.ctx.save();
@@ -2931,6 +3265,7 @@ function initTransifyAllModules() {
   window.handleDirectLogin = () => TransifyApp.handleDirectLogin();
   window.handleDemoLogin = () => TransifyApp.handleDemoLogin();
   window.handleAuthSubmit = (e) => TransifyApp.handleAuthSubmit(e);
+  window.triggerManualCapture = () => SignPage.triggerManualCapture();
 }
 
 if (document.readyState === 'loading') {
