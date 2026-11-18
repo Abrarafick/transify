@@ -33,5 +33,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:8000/api/health || exit 1
 
-# Launch the unified server
-CMD ["python", "run_server.py", "--host", "0.0.0.0", "--port", "8000"]
+# Launch the unified server (auto-detects cloud $PORT and $HOST)
+CMD ["python", "run_server.py"]
