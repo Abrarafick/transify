@@ -157,6 +157,24 @@ class BrailleCellDetector:
                         dot_centers.append((cx, cy))
 
         if not dot_centers:
+            # Fallback pass: Morphological BlackHat filter for tactile embossed dot shadows
+            k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+            bh = cv2.morphologyEx(gray, cv2.MORPH_BLACKHAT, k)
+            _, bin_alt = cv2.threshold(bh, 12, 255, cv2.THRESH_BINARY)
+            cnts2, _ = cv2.findContours(bin_alt, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            for cnt in cnts2:
+                area = cv2.contourArea(cnt)
+                if 3.0 <= area <= 3500.0:
+                    bx, by, bw, bh_box = cv2.boundingRect(cnt)
+                    ar = float(bw) / float(bh_box)
+                    if 0.2 <= ar <= 5.0:
+                        M = cv2.moments(cnt)
+                        if M["m00"] > 0:
+                            cx = int(M["m10"] / M["m00"])
+                            cy = int(M["m01"] / M["m00"])
+                            dot_centers.append((cx, cy))
+
+        if not dot_centers:
             return []
 
         # Dynamic estimation of inter-dot spacing

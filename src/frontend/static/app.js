@@ -1927,6 +1927,8 @@ var BraillePage = window.BraillePage = {
     this.isInitialized = true;
     this.setupDropzone();
     this.setupActionButtons();
+    this.setupQuickSamples();
+    this.setupBrailleStudio();
   },
 
   setupDropzone() {
@@ -2066,6 +2068,265 @@ var BraillePage = window.BraillePage = {
         a.click();
         URL.revokeObjectURL(url);
       });
+    }
+  },
+
+  setupQuickSamples() {
+    const sampleBtns = document.querySelectorAll('.sample-braille-btn');
+    sampleBtns.forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        e.preventDefault();
+        const filename = btn.dataset.sample;
+        if (!filename) return;
+
+        TransifyApp.showToast(`Loading test sample: ${filename}...`, 'info');
+        try {
+          const resp = await fetch(`/api/samples/braille/${filename}`);
+          if (!resp.ok) throw new Error(`Could not fetch sample ${filename}`);
+          const blob = await resp.blob();
+          const file = new File([blob], filename, { type: 'image/png' });
+          this.handleFileSelected(file);
+        } catch (err) {
+          console.error('Error loading Braille sample:', err);
+          TransifyApp.showToast('Could not load sample file: ' + err.message, 'danger');
+        }
+      });
+    });
+  },
+
+  perkinsDots: [0, 0, 0, 0, 0, 0],
+  perkinsComposedText: '',
+  perkinsComposedBraille: '',
+
+  switchTab(tabName) {
+    const tabText = document.getElementById('braille-tab-text-to-braille');
+    const tabKeypad = document.getElementById('braille-tab-perkins-keypad');
+    const btnText = document.getElementById('tab-btn-text-to-braille');
+    const btnKeypad = document.getElementById('tab-btn-perkins-keypad');
+
+    if (tabName === 'text-to-braille') {
+      if (tabText) tabText.style.display = 'block';
+      if (tabKeypad) tabKeypad.style.display = 'none';
+      if (btnText) btnText.classList.add('active');
+      if (btnKeypad) btnKeypad.classList.remove('active');
+    } else {
+      if (tabText) tabText.style.display = 'none';
+      if (tabKeypad) tabKeypad.style.display = 'block';
+      if (btnText) btnText.classList.remove('active');
+      if (btnKeypad) btnKeypad.classList.add('active');
+    }
+  },
+
+  setupBrailleStudio() {
+    // 1. Text-to-Braille studio input
+    const studioInput = document.getElementById('studio-text-input');
+    const studioOutput = document.getElementById('studio-braille-output');
+    const cellsBreakdown = document.getElementById('studio-cells-breakdown');
+    const copyStudioBtn = document.getElementById('copy-studio-braille-btn');
+    const speakStudioBtn = document.getElementById('speak-studio-text-btn');
+    const clearStudioBtn = document.getElementById('clear-studio-text-btn');
+
+    let debounceTimer = null;
+    const updateTextToBraille = async () => {
+      const text = studioInput ? studioInput.value.trim() : '';
+      if (!text) {
+        if (studioOutput) studioOutput.textContent = '⠀';
+        if (cellsBreakdown) cellsBreakdown.innerHTML = '';
+        return;
+      }
+      try {
+        const resp = await fetch('/api/braille/studio/text-to-braille', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text })
+        });
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (studioOutput) studioOutput.textContent = data.braille_unicode;
+
+        if (cellsBreakdown && data.cells) {
+          cellsBreakdown.innerHTML = data.cells.map(c => `
+            <div class="braille-char-badge">
+              <span class="braille-char-unicode">${c.unicode}</span>
+              <span class="braille-char-label">${c.char}</span>
+              <span class="braille-char-dots">${c.dots && c.dots.length > 0 ? c.dots.join(',') : 'space'}</span>
+            </div>
+          `).join('');
+        }
+      } catch (err) {
+        console.debug('Text to Braille notice:', err);
+      }
+    };
+
+    if (studioInput) {
+      studioInput.addEventListener('input', () => {
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(updateTextToBraille, 200);
+      });
+      // Initial render on load
+      updateTextToBraille();
+    }
+
+    if (copyStudioBtn) {
+      copyStudioBtn.addEventListener('click', () => {
+        const braille = studioOutput ? studioOutput.textContent.trim() : '';
+        if (braille) {
+          navigator.clipboard.writeText(braille);
+          TransifyApp.showToast('Copied Braille Unicode to clipboard!', 'success');
+        }
+      });
+    }
+
+    if (speakStudioBtn) {
+      speakStudioBtn.addEventListener('click', () => {
+        const text = studioInput ? studioInput.value.trim() : '';
+        if (text) TransifyTTS.speak(text);
+      });
+    }
+
+    if (clearStudioBtn) {
+      clearStudioBtn.addEventListener('click', () => {
+        if (studioInput) studioInput.value = '';
+        updateTextToBraille();
+      });
+    }
+
+    // 2. Perkins 6-Dot Keypad
+    const dotBtns = document.querySelectorAll('.perkins-dot-btn');
+    dotBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        const dotNum = parseInt(btn.dataset.dot, 10);
+        if (dotNum >= 1 && dotNum <= 6) {
+          this.perkinsDots[dotNum - 1] = 1 - this.perkinsDots[dotNum - 1];
+          btn.classList.toggle('active', this.perkinsDots[dotNum - 1] === 1);
+          this.updatePerkinsCellPreview();
+        }
+      });
+    });
+
+    const commitBtn = document.getElementById('perkins-commit-btn');
+    const spaceBtn = document.getElementById('perkins-space-btn');
+    const backspaceBtn = document.getElementById('perkins-backspace-btn');
+    const clearCellBtn = document.getElementById('perkins-clear-cell-btn');
+    const speakKeypadBtn = document.getElementById('perkins-speak-btn');
+    const copyKeypadBtn = document.getElementById('perkins-copy-btn');
+    const clearTextBtn = document.getElementById('perkins-clear-text-btn');
+
+    if (commitBtn) {
+      commitBtn.addEventListener('click', async () => {
+        const previewChar = document.getElementById('keypad-char-preview');
+        const previewBraille = document.getElementById('keypad-braille-preview');
+        const char = previewChar ? previewChar.textContent : '';
+        const braille = previewBraille ? previewBraille.textContent : '';
+
+        if (char && char !== '[SPACE]' && char !== '?') {
+          this.perkinsComposedText += char;
+          this.perkinsComposedBraille += braille;
+          this.renderPerkinsComposed();
+          this.resetPerkinsDots();
+        } else if (char === '[SPACE]') {
+          this.perkinsComposedText += ' ';
+          this.perkinsComposedBraille += '⠀';
+          this.renderPerkinsComposed();
+          this.resetPerkinsDots();
+        }
+      });
+    }
+
+    if (spaceBtn) {
+      spaceBtn.addEventListener('click', () => {
+        this.perkinsComposedText += ' ';
+        this.perkinsComposedBraille += '⠀';
+        this.renderPerkinsComposed();
+      });
+    }
+
+    if (backspaceBtn) {
+      backspaceBtn.addEventListener('click', () => {
+        if (this.perkinsComposedText.length > 0) {
+          this.perkinsComposedText = this.perkinsComposedText.slice(0, -1);
+          this.perkinsComposedBraille = this.perkinsComposedBraille.slice(0, -1);
+          this.renderPerkinsComposed();
+        }
+      });
+    }
+
+    if (clearCellBtn) {
+      clearCellBtn.addEventListener('click', () => {
+        this.resetPerkinsDots();
+      });
+    }
+
+    if (speakKeypadBtn) {
+      speakKeypadBtn.addEventListener('click', () => {
+        if (this.perkinsComposedText.trim()) {
+          TransifyTTS.speak(this.perkinsComposedText.trim());
+        } else {
+          TransifyApp.showToast('No composed message to speak.', 'warning');
+        }
+      });
+    }
+
+    if (copyKeypadBtn) {
+      copyKeypadBtn.addEventListener('click', () => {
+        if (this.perkinsComposedText.trim()) {
+          navigator.clipboard.writeText(this.perkinsComposedText.trim());
+          TransifyApp.showToast('Copied composed text to clipboard!', 'success');
+        }
+      });
+    }
+
+    if (clearTextBtn) {
+      clearTextBtn.addEventListener('click', () => {
+        this.perkinsComposedText = '';
+        this.perkinsComposedBraille = '';
+        this.renderPerkinsComposed();
+      });
+    }
+  },
+
+  async updatePerkinsCellPreview() {
+    try {
+      const resp = await fetch('/api/braille/studio/cell-to-text', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dots: this.perkinsDots })
+      });
+      if (!resp.ok) return;
+      const data = await resp.json();
+
+      const previewBraille = document.getElementById('keypad-braille-preview');
+      const previewChar = document.getElementById('keypad-char-preview');
+      const activeDotsLabel = document.getElementById('keypad-dots-active');
+
+      if (previewBraille) previewBraille.textContent = data.unicode;
+      if (previewChar) {
+        previewChar.textContent = data.char_type === 'space' ? '[SPACE]' : data.char;
+      }
+      if (activeDotsLabel) {
+        activeDotsLabel.textContent = data.dots && data.dots.length > 0
+          ? `Dots raised: ${data.dots.join(', ')}`
+          : 'No dots raised';
+      }
+    } catch (err) {
+      console.debug('Cell preview notice:', err);
+    }
+  },
+
+  resetPerkinsDots() {
+    this.perkinsDots = [0, 0, 0, 0, 0, 0];
+    document.querySelectorAll('.perkins-dot-btn').forEach(b => b.classList.remove('active'));
+    this.updatePerkinsCellPreview();
+  },
+
+  renderPerkinsComposed() {
+    const textEl = document.getElementById('perkins-composed-text');
+    const brailleEl = document.getElementById('perkins-composed-braille');
+    if (textEl) {
+      textEl.textContent = this.perkinsComposedText || '(Type with 6-dot keypad above)';
+    }
+    if (brailleEl) {
+      brailleEl.textContent = this.perkinsComposedBraille;
     }
   },
 

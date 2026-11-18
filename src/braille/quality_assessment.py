@@ -15,7 +15,7 @@ class ImageQualityAssessment:
 
     def __init__(
         self,
-        min_blur_var: float = 25.0,
+        min_blur_var: float = 7.0,
         min_brightness: float = 30.0,
         max_brightness: float = 250.0,
         min_contrast: float = 1.5,

@@ -265,6 +265,23 @@ class TestBrailleRecognitionAndIQA(unittest.TestCase):
         self.assertGreater(data["mean_confidence"], 0.85)
         self.assertIn("quick brown fox", data["text"].lower())
 
+    def test_braille_studio_bidirectional(self):
+        from src.braille.braille_studio import text_to_braille, braille_to_text, cell_to_text
+        res = text_to_braille("Transify 2026")
+        self.assertTrue(res["success"])
+        self.assertIn("⠠", res["braille_unicode"])
+        self.assertGreater(res["cell_count"], 5)
+
+        dec = braille_to_text(res["braille_unicode"])
+        self.assertTrue(dec["success"])
+        self.assertEqual(dec["decoded_text"], "Transify 2026")
+
+        # Test single Perkins 6-dot cell decoding (e.g. 'b' = dots 1, 2)
+        cell = cell_to_text([1, 1, 0, 0, 0, 0])
+        self.assertTrue(cell["success"])
+        self.assertEqual(cell["char"], "b")
+        self.assertEqual(cell["unicode"], "⠃")
+
 
 class TestTTSEngine(unittest.TestCase):
     """Verifies audio synthesis and client utterance parameters."""

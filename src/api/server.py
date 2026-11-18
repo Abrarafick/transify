@@ -33,6 +33,7 @@ from src.sign.vocabulary_registry import get_all_categories, EXPANDED_VOCABULARY
 from src.sign.live_frame_processor import LiveSignFrameProcessor
 from src.sign.mcp_sign_resolver import MCPSignResolver
 from src.sign.hagrid_recognizer import HAGRID_GESTURES, HAGRID_CLASS_NAMES
+from src.braille.braille_studio import text_to_braille, cell_to_text, braille_to_text
 from src.database.db import (
     log_translation,
     get_history,
@@ -117,6 +118,18 @@ class MCPSignResolveRequest(BaseModel):
     top_candidates: Optional[List[Dict[str, Any]]] = Field(None, description="Top predicted candidates")
     motion_energy: Optional[float] = Field(0.0, description="Kinematic motion energy")
     gloss_hint: Optional[str] = Field("", description="Gloss hint")
+
+
+class TextToBrailleRequest(BaseModel):
+    text: str = Field(..., description="English or alphanumeric text to translate into Braille")
+
+
+class CellToTextRequest(BaseModel):
+    dots: List[int] = Field(..., description="6-element binary list [d1, d2, d3, d4, d5, d6]")
+
+
+class BrailleToTextRequest(BaseModel):
+    braille: str = Field(..., description="Braille Unicode string to decode into English text")
 
 
 # --- API Routes ---
@@ -480,6 +493,24 @@ async def check_image_quality(
     iqa_res = braille_adapter.assess_quality(contents)
     iqa_res["is_usable"] = iqa_res["accepted"]
     return iqa_res
+
+
+@app.post("/api/braille/studio/text-to-braille", tags=["Braille Studio"])
+def api_text_to_braille(req: TextToBrailleRequest):
+    """Translates plain English or alphanumeric text into UEB Grade 1 Braille Unicode and 6-dot configurations."""
+    return text_to_braille(req.text)
+
+
+@app.post("/api/braille/studio/cell-to-text", tags=["Braille Studio"])
+def api_cell_to_text(req: CellToTextRequest):
+    """Decodes a 6-dot cell configuration into character and Braille Unicode."""
+    return cell_to_text(req.dots)
+
+
+@app.post("/api/braille/studio/braille-to-text", tags=["Braille Studio"])
+def api_braille_to_text(req: BrailleToTextRequest):
+    """Decodes Braille Unicode characters into plain English text."""
+    return braille_to_text(req.braille)
 
 
 # --- Text-to-Speech & Accessibility Endpoints ---
