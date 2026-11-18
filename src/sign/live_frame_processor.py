@@ -198,7 +198,7 @@ class LiveSignFrameProcessor:
         self.predictor = SignPredictor()
         self.fingerspelling = FingerspellingRecognizer()
         self.hagrid_recognizer = HaGRIDRecognizer()
-        self.stabilizer = PredictionStabilizer(window_size=5, required_votes=3, confidence_threshold=0.60)
+        self.stabilizer = PredictionStabilizer(window_size=8, required_votes=5, confidence_threshold=0.65)
         self.composer = TextComposer()
         self.mcp_resolver = MCPSignResolver()
         self.frame_count = 0
@@ -850,6 +850,10 @@ class LiveSignFrameProcessor:
                 }
 
             # DECISION CONFIRMED!
+            is_new_word = (confirmed_word != self.last_confirmed_word)
+            if is_new_word:
+                self.last_confirmed_word = confirmed_word
+
             unified_translation = {
                 "source_language": "HaGRID Gesture",
                 "source_model": model_display_name,
@@ -866,6 +870,7 @@ class LiveSignFrameProcessor:
                 "language_mode": "asl",
                 "model_name": model_display_name,
                 "is_word": True,
+                "is_new_word": is_new_word,
                 "word": final_word,
                 "label": final_word,
                 "candidate_label": final_word,
@@ -945,6 +950,10 @@ class LiveSignFrameProcessor:
                     "latency_ms": round((time.time() - t0) * 1000, 2)
                 }
 
+            is_new_word = (confirmed_word != self.last_confirmed_word)
+            if is_new_word:
+                self.last_confirmed_word = confirmed_word
+
             unified_translation = {
                 "source_language": "ASL",
                 "source_model": model_display_name,
@@ -961,6 +970,7 @@ class LiveSignFrameProcessor:
                 "language_mode": "asl",
                 "model_name": model_display_name,
                 "is_word": True,
+                "is_new_word": is_new_word,
                 "word": final_word,
                 "label": final_word,
                 "candidate_label": final_word,
@@ -986,6 +996,7 @@ class LiveSignFrameProcessor:
         # DO NOT fall through to the 24-class letter CNN! Hand is waiting / READY!
         if mode != "fingerspell" and not is_synthetic_test:
             self.stabilizer.update(None, 0.0)
+            self.last_confirmed_word = ""
             self.ambiguity_counter = 0
             self.ambiguity_start_time = 0.0
             return {

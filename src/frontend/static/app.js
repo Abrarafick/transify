@@ -1427,7 +1427,8 @@ var SignPage = window.SignPage = window.TransifySign = {
 
             // Commit word to sentence & speak
             if (data.is_word) {
-              if (Date.now() - this.lastConfirmedTime > 1800) {
+              if (data.label !== this.lastConfirmedSign) {
+                this.lastConfirmedSign = data.label;
                 this.lastConfirmedTime = Date.now();
                 this.addTokenToSentence(data.label);
                 TransifyApp.showToast(`Recognized Sign "${data.label}" confirmed!`, 'success');
@@ -1439,7 +1440,8 @@ var SignPage = window.SignPage = window.TransifySign = {
                 const wordEl = document.getElementById('spelled-word-display');
                 if (wordEl) wordEl.textContent = data.composed_text;
               }
-              if (Date.now() - this.lastConfirmedTime > 1300) {
+              if (data.label !== this.lastConfirmedLetter) {
+                this.lastConfirmedLetter = data.label;
                 this.lastConfirmedTime = Date.now();
                 this.triggerFingerspellLetter(data.label);
               }
@@ -1460,6 +1462,8 @@ var SignPage = window.SignPage = window.TransifySign = {
             });
           } else if (data.hand_detected) {
             // Hand is in position inside target box, waiting for user to form sign
+            this.lastConfirmedSign = '';
+            this.lastConfirmedLetter = '';
             this.updatePredictionUI({
               label: 'IDLE',
               display_text: data.display_text || '✋ Hand In Position (Ready To Sign)',
@@ -1471,6 +1475,8 @@ var SignPage = window.SignPage = window.TransifySign = {
             });
           } else {
             // No hand inside target box
+            this.lastConfirmedSign = '';
+            this.lastConfirmedLetter = '';
             this.updatePredictionUI({
               label: 'IDLE',
               display_text: data.display_text || 'Position hand inside the fixed guide box ✋',
@@ -1867,11 +1873,10 @@ var SignPage = window.SignPage = window.TransifySign = {
     if (result.confirmed) {
       const now = Date.now();
       const isNewSign = (result.label !== this.lastConfirmedSign);
-      const isTimeElapsed = (now - this.lastConfirmedSpeechTime > 2500);
 
       this.lastPrediction = result.label;
 
-      if (isNewSign || isTimeElapsed) {
+      if (isNewSign) {
         this.lastConfirmedSign = result.label;
         this.lastConfirmedSpeechTime = now;
 
@@ -1886,7 +1891,7 @@ var SignPage = window.SignPage = window.TransifySign = {
         }
       }
     } else {
-      if (statusNote) statusNote.textContent = `Debouncing consensus (${result.debounce_count}/${result.debounce_target})...`;
+      if (statusNote) statusNote.textContent = `Debouncing consensus (${result.debounce_count || 0}/${result.debounce_target || 5})...`;
     }
   },
 
